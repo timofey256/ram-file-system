@@ -108,11 +108,18 @@ static ssize_t rf_write(struct file *f, const char __user *buf,
 	return len;
 }
 
+static int rf_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+{
+        /* Everything already lives in memory, nothing to flush. */
+        return 0;
+}
+
 static const struct file_operations rf_fops = {
     .open    = rf_open,
 	.read    = rf_read,
 	.write   = rf_write,
 	.llseek  = generic_file_llseek,
+    .fsync   = rf_fsync,
 };
 
 /* ------------------------------------------- */
