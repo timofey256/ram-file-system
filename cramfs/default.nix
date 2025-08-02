@@ -5,9 +5,9 @@ let
   kernel = pkgs.linuxPackages.kernel;
 in
 pkgs.stdenv.mkDerivation {
-  pname   = "ramfs-custom";
+  pname   = "myramfs";
   version = "0.1";
-  src     = ./.;                           # Makefile + ramfs_mmap.c live here
+  src     = ./.; 
 
   # everything the out-of-tree module build needs
   nativeBuildInputs = [
@@ -20,9 +20,8 @@ pkgs.stdenv.mkDerivation {
     "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
   ];
 
-  # drop the .ko into the proper versioned directory
   installPhase = ''
     mkdir -p $out/lib/modules/${kernel.modDirVersion}/extra
-    cp ramfs_custom.ko $out/lib/modules/${kernel.modDirVersion}/extra/
+    cp myramfs.ko $out/lib/modules/${kernel.modDirVersion}/extra/
   '';
 }
