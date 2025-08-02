@@ -139,14 +139,13 @@ static const struct inode_operations rf_dir_iops = {
 
 static void rf_evict(struct inode *inode)
 {
-    if (S_ISREG(inode->i_mode)) {
-        struct rbuf *rb = inode->i_private;
-        if (rb) {
-            kfree(rb->data);
-            kfree(rb);
+        if (S_ISREG(inode->i_mode)) {
+                struct rbuf *rb = inode->i_private;
+                kfree(rb->data);
+                kfree(rb);
         }
-    }
-    generic_drop_inode(inode);
+        truncate_inode_pages_final(&inode->i_data);
+        clear_inode(inode);
 }
 
 /* Minimal superblock ops */
@@ -169,9 +168,10 @@ static int rf_fill_super(struct super_block *sb, void *data, int silent)
 
 	// initialize root directory
 	root = rf_make_inode(sb, S_IFDIR | 0755);
-    root->i_op = &rf_dir_iops;
 	if (!root)
 		return -ENOMEM;
+    root->i_op = &rf_dir_iops;
+
 	sb->s_root = d_make_root(root);
 	if (!sb->s_root)
 		return -ENOMEM;
