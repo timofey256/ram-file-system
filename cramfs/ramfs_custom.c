@@ -12,17 +12,17 @@
 #include <linux/limits.h> 
 #include <linux/list.h> 
 
-#undef  RAMFS_MAGIC
 #define RAMFSC_MAGIC   0xDEC0AD1A
-#define HELLO_STR     "Hello from RAMFS \n"
-#define HELLO_NAME    "hello"
-#define PAGE_ORDER    0           // one 4-KiB page
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Minimal RAM-backed FS, kernel-6.12-ready");
 
 struct mnt_idmap;        
 extern struct mnt_idmap nop_mnt_idmap;
+
+static const struct file_operations  rf_fops;
+static const struct inode_operations rf_dir_iops;
+static const struct super_operations rf_sops;
 
 /* File RAM buffer */
 struct rbuf {
@@ -49,7 +49,8 @@ static int rf_reserve(struct rbuf *rb, size_t need) {
     return 0;
 }
 
-/* ---------------- file ops ---------------- */
+
+
 static int rf_open(struct inode *inode, struct file *filp)
 {
 	filp->private_data = inode->i_private;
@@ -66,23 +67,23 @@ static ssize_t rf_read(struct file *f, char __user *buf,
 static int rf_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
                       struct iattr *attr)
 {
-        struct inode *inode = d_inode(dentry);
+    struct inode *inode = d_inode(dentry);
 
-        /* Let generic helper perform all normal work */
-        int err = simple_setattr(idmap, dentry, attr);
-        if (err || !(attr->ia_valid & ATTR_SIZE))
-                return err;
+    /* Let generic helper perform all normal work */
+    int err = simple_setattr(idmap, dentry, attr);
+    if (err || !(attr->ia_valid & ATTR_SIZE))
+            return err;
 
-        /* Only regular files have a rbuf */
-        if (S_ISREG(inode->i_mode)) {
-                struct rbuf *rb = inode->i_private;
-                loff_t new = i_size_read(inode);
+    /* Only regular files have a rbuf */
+    if (S_ISREG(inode->i_mode)) {
+            struct rbuf *rb = inode->i_private;
+            loff_t new = i_size_read(inode);
 
-                if (new > rb->cap && rf_reserve(rb, new))
-                        return -ENOMEM;
-                rb->size = new;
-        }
-        return 0;
+            if (new > rb->cap && rf_reserve(rb, new))
+                    return -ENOMEM;
+            rb->size = new;
+    }
+    return 0;
 }
 
 static ssize_t rf_write(struct file *f, const char __user *buf,
@@ -122,7 +123,7 @@ static const struct file_operations rf_fops = {
     .fsync   = rf_fsync,
 };
 
-/* ------------------------------------------- */
+
 
 static struct inode *rf_make_inode(struct super_block *sb, umode_t mode)
 {
@@ -131,8 +132,6 @@ static struct inode *rf_make_inode(struct super_block *sb, umode_t mode)
 		return NULL;
 
     inode_init_owner(&nop_mnt_idmap, inode, NULL, mode);
-
-	//inode->i_mtime = current_time(inode);
 
 	if (S_ISDIR(mode)) {
 		inode->i_op  = &simple_dir_inode_operations;
@@ -160,31 +159,30 @@ static int rf_create(struct mnt_idmap *idmap, struct inode *dir,
 	}
 	ino->i_private = rb;
 
-	d_instantiate(dentry, ino);   /* bind dentry ↔ inode */
-	dget(dentry);                 /* pin so VFS drops later */
+	d_add(dentry, ino);   /* bind dentry to inode */
 	return 0;
 }
 
-static const struct inode_operations rf_dir_iops;
+
+
 static int rf_mkdir(struct mnt_idmap *idmap, struct inode *dir,
                     struct dentry *dentry, umode_t mode)
 {
-        struct inode *inode;
+    struct inode *inode;
 
-        inode = rf_make_inode(dir->i_sb, S_IFDIR | mode);
-        if (!inode)
-            return -ENOMEM;
+    inode = rf_make_inode(dir->i_sb, S_IFDIR | mode);
+    if (!inode)
+        return -ENOMEM;
 
-        inode_inc_link_count(dir);
-        inode_inc_link_count(inode);
+    inode_inc_link_count(dir);
+    inode_inc_link_count(inode);
 
-        inode->i_op  = &rf_dir_iops;
-        inode->i_fop = &simple_dir_operations;
+    inode->i_op  = &rf_dir_iops;
+    inode->i_fop = &simple_dir_operations;
 
-        d_instantiate(dentry, inode);
-        dget(dentry);                    /* pin dentry until unlink/rmdir */
+    d_add(dentry, inode);
 
-        return 0;
+    return 0;
 }
 
 
@@ -194,6 +192,8 @@ static const struct inode_operations rf_dir_iops = {
     .setattr = rf_setattr,
     .mkdir = rf_mkdir,
 };
+
+
 
 static void rf_evict(struct inode *inode)
 {
@@ -206,14 +206,14 @@ static void rf_evict(struct inode *inode)
         clear_inode(inode);
 }
 
-/* Minimal superblock ops */
 static const struct super_operations rf_sops = {
         .statfs      = simple_statfs,
         .drop_inode  = generic_delete_inode,
         .evict_inode = rf_evict
 };
 
-/* superblock initialization */
+
+
 static int rf_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct inode *root, *hello;
@@ -243,19 +243,11 @@ static struct dentry *rf_mount(struct file_system_type *t,
 	return mount_nodev(t, flags, data, rf_fill_super);
 }
 
-static void rf_kill_sb(struct super_block *sb)
-{
-    // This will clean up resources on unmount
-	kill_litter_super(sb);
-}
-
-// Main struct which describes our file system - so-called loader stub
-//_`mount -t ramfs_custom none /mnt`_ calls `rf_mount`, _umount_ calls `rf_kill_sb`.
 static struct file_system_type rf_fs_type = {
 	.owner   = THIS_MODULE,
-	.name    = "ramfs_custom",
+	.name    = "cramfs",
 	.mount   = rf_mount,
-	.kill_sb = rf_kill_sb,
+	.kill_sb = kill_litter_super,
 };
 
 static int __init rf_init(void)   { return register_filesystem(&rf_fs_type); }
