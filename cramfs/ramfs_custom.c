@@ -9,10 +9,12 @@
 #include <linux/version.h>
 #include <linux/pagemap.h>
 #include <linux/statfs.h> 
+#include <linux/limits.h> 
+#include <linux/list.h> 
 
 #undef  RAMFS_MAGIC
 #define RAMFSC_MAGIC   0xDEC0AD1A
-#define HELLO_STR     "Hello from RAMFS ✨\n"
+#define HELLO_STR     "Hello from RAMFS \n"
 #define HELLO_NAME    "hello"
 #define PAGE_ORDER    0           // one 4-KiB page
 
@@ -22,11 +24,30 @@ MODULE_DESCRIPTION("Minimal RAM-backed FS, kernel-6.12-ready");
 struct mnt_idmap;        
 extern struct mnt_idmap nop_mnt_idmap;
 
-/* minimal super-block ops */
-static const struct super_operations rf_sops = {
-        .statfs      = simple_statfs,
-        .drop_inode  = generic_delete_inode,
+/* File RAM buffer */
+struct rbuf {
+	char  *data;
+	size_t size;      // bytes used
+	size_t cap;       // bytes allocated
 };
+
+static int rf_reserve(struct rbuf *rb, size_t need) {
+    if (need <= rb->cap)
+        return 0;
+
+    size_t newcap = rb->cap ? rb->cap : PAGE_SIZE;
+    while (newcap < need)
+        newcap <<= 1;
+
+    char *tmp = krealloc(rb->data, newcap, GFP_KERNEL);
+    if (!tmp)
+        return -ENOMEM;
+
+    rb->data = tmp;
+    rb->cap = newcap;
+    // don't touch rb->size because it's just an allocation. we don't yet know how much data we will store there.
+    return 0;
+}
 
 /* ---------------- file ops ---------------- */
 static int rf_open(struct inode *inode, struct file *filp)
@@ -38,31 +59,28 @@ static int rf_open(struct inode *inode, struct file *filp)
 static ssize_t rf_read(struct file *f, char __user *buf,
                        size_t len, loff_t *ppos)
 {
-	char *data = f->private_data;
-	size_t sz  = i_size_read(file_inode(f));
-	return simple_read_from_buffer(buf, len, ppos, data, sz);
+    struct rbuf *rb = f->private_data;
+	return simple_read_from_buffer(buf, len, ppos, rb->data, rb->size);
 }
 
 static ssize_t rf_write(struct file *f, const char __user *buf,
                         size_t len, loff_t *ppos)
 {
-	char *data = f->private_data;
-	size_t max = PAGE_SIZE - 1;
+	struct rbuf *rb = f->private_data;
+    loff_t end = *ppos + len;
 
-	if (*ppos >= max)
-		return -ENOSPC;
-	if (len > max - *ppos)
-		len = max - *ppos;
-
-	if (copy_from_user(data + *ppos, buf, len))
-		return -EFAULT;
+	if (end > INT_MAX) // sanity check
+		return -EFBIG;
+    if (rf_reserve(rb, end))
+        return -ENOMEM;
+    if (copy_from_user(rb->data + *ppos, buf, len))
+        return -EFAULT;
 
 	*ppos += len;
-	data[*ppos] = '\0';
-	i_size_write(file_inode(f), *ppos);
+    rb->size = max_t(size_t, rb->size, end);
+	i_size_write(file_inode(f), rb->size);
 	return len;
 }
-
 
 static const struct file_operations rf_fops = {
     .open    = rf_open,
@@ -93,6 +111,51 @@ static struct inode *rf_make_inode(struct super_block *sb, umode_t mode)
 	return inode;
 }
 
+static int rf_create(struct mnt_idmap *idmap, struct inode *dir,
+                     struct dentry *dentry, umode_t mode, bool excl) {
+    struct inode *ino = rf_make_inode(dir->i_sb, S_IFREG | mode);
+	struct rbuf  *rb;
+
+	if (!ino)
+		return -ENOMEM;
+
+	rb = kzalloc(sizeof(*rb), GFP_KERNEL);
+	if (!rb || rf_reserve(rb, PAGE_SIZE)) {
+		iput(ino);
+		kfree(rb);
+		return -ENOMEM;
+	}
+	ino->i_private = rb;
+
+	d_instantiate(dentry, ino);   /* bind dentry ↔ inode */
+	dget(dentry);                 /* pin so VFS drops later */
+	return 0;
+}
+
+static const struct inode_operations rf_dir_iops = {
+	.lookup = simple_lookup,
+	.create = rf_create,
+};
+
+static void rf_evict(struct inode *inode)
+{
+    if (S_ISREG(inode->i_mode)) {
+        struct rbuf *rb = inode->i_private;
+        if (rb) {
+            kfree(rb->data);
+            kfree(rb);
+        }
+    }
+    generic_drop_inode(inode);
+}
+
+/* Minimal superblock ops */
+static const struct super_operations rf_sops = {
+        .statfs      = simple_statfs,
+        .drop_inode  = generic_delete_inode,
+        .evict_inode = rf_evict
+};
+
 /* superblock initialization */
 static int rf_fill_super(struct super_block *sb, void *data, int silent)
 {
@@ -106,28 +169,13 @@ static int rf_fill_super(struct super_block *sb, void *data, int silent)
 
 	// initialize root directory
 	root = rf_make_inode(sb, S_IFDIR | 0755);
+    root->i_op = &rf_dir_iops;
 	if (!root)
 		return -ENOMEM;
 	sb->s_root = d_make_root(root);
 	if (!sb->s_root)
 		return -ENOMEM;
 
-	// initialize our single regular hello file
-	hello = rf_make_inode(sb, S_IFREG | 0644);
-	if (!hello)
-		return -ENOMEM;
-
-	page = (char *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, PAGE_ORDER);
-	if (!page)
-		return -ENOMEM;
-	strcpy(page, HELLO_STR);
-	i_size_write(hello, strlen(page));
-	hello->i_private = page;
-
-	hello_d = d_alloc_name(sb->s_root, HELLO_NAME);
-	if (!hello_d)
-		return -ENOMEM;
-	d_add(hello_d, hello);
 	return 0;
 }
 
@@ -140,13 +188,6 @@ static struct dentry *rf_mount(struct file_system_type *t,
 static void rf_kill_sb(struct super_block *sb)
 {
     // This will clean up resources on unmount
-
-	struct dentry *d = d_lookup(sb->s_root,
-		&(const struct qstr)QSTR_INIT(HELLO_NAME, strlen(HELLO_NAME)));
-	if (d) {
-		free_pages_exact(d_inode(d)->i_private, PAGE_SIZE);
-		dput(d);
-	}
 	kill_litter_super(sb);
 }
 
