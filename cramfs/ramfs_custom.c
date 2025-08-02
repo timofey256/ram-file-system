@@ -165,10 +165,34 @@ static int rf_create(struct mnt_idmap *idmap, struct inode *dir,
 	return 0;
 }
 
+static const struct inode_operations rf_dir_iops;
+static int rf_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+                    struct dentry *dentry, umode_t mode)
+{
+        struct inode *inode;
+
+        inode = rf_make_inode(dir->i_sb, S_IFDIR | mode);
+        if (!inode)
+            return -ENOMEM;
+
+        inode_inc_link_count(dir);
+        inode_inc_link_count(inode);
+
+        inode->i_op  = &rf_dir_iops;
+        inode->i_fop = &simple_dir_operations;
+
+        d_instantiate(dentry, inode);
+        dget(dentry);                    /* pin dentry until unlink/rmdir */
+
+        return 0;
+}
+
+
 static const struct inode_operations rf_dir_iops = {
 	.lookup = simple_lookup,
 	.create = rf_create,
     .setattr = rf_setattr,
+    .mkdir = rf_mkdir,
 };
 
 static void rf_evict(struct inode *inode)
