@@ -1,4 +1,4 @@
-obj-m += ramfs_custom.o
+obj-m += myramfs.o
 
 # honour externally-supplied KDIR, fall back to the running kernel
 KDIR ?= /lib/modules/$(shell uname -r)/build

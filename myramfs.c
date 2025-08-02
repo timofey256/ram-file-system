@@ -221,6 +221,7 @@ static int rf_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_time_gran = 1;
 
 	// initialize root directory
+    struct inode *root;
 	root = rf_make_inode(sb, S_IFDIR | 0755);
 	if (!root)
 		return -ENOMEM;
