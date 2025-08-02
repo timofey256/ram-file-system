@@ -63,10 +63,36 @@ static ssize_t rf_read(struct file *f, char __user *buf,
 	return simple_read_from_buffer(buf, len, ppos, rb->data, rb->size);
 }
 
+static int rf_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+                      struct iattr *attr)
+{
+        struct inode *inode = d_inode(dentry);
+
+        /* Let generic helper perform all normal work */
+        int err = simple_setattr(idmap, dentry, attr);
+        if (err || !(attr->ia_valid & ATTR_SIZE))
+                return err;
+
+        /* Only regular files have a rbuf */
+        if (S_ISREG(inode->i_mode)) {
+                struct rbuf *rb = inode->i_private;
+                loff_t new = i_size_read(inode);
+
+                if (new > rb->cap && rf_reserve(rb, new))
+                        return -ENOMEM;
+                rb->size = new;
+        }
+        return 0;
+}
+
 static ssize_t rf_write(struct file *f, const char __user *buf,
                         size_t len, loff_t *ppos)
 {
 	struct rbuf *rb = f->private_data;
+
+    if (f->f_flags & O_APPEND)
+        *ppos = rb->size;
+
     loff_t end = *ppos + len;
 
 	if (end > INT_MAX) // sanity check
@@ -135,6 +161,7 @@ static int rf_create(struct mnt_idmap *idmap, struct inode *dir,
 static const struct inode_operations rf_dir_iops = {
 	.lookup = simple_lookup,
 	.create = rf_create,
+    .setattr = rf_setattr,
 };
 
 static void rf_evict(struct inode *inode)
