@@ -111,8 +111,8 @@ static ssize_t rf_write(struct file *f, const char __user *buf,
 
 static int rf_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-        /* Everything already lives in memory, nothing to flush. */
-        return 0;
+    /* Everything already lives in memory, nothing to flush. */
+    return 0;
 }
 
 static const struct file_operations rf_fops = {
@@ -197,29 +197,25 @@ static const struct inode_operations rf_dir_iops = {
 
 static void rf_evict(struct inode *inode)
 {
-        if (S_ISREG(inode->i_mode)) {
-                struct rbuf *rb = inode->i_private;
-                kfree(rb->data);
-                kfree(rb);
-        }
-        truncate_inode_pages_final(&inode->i_data);
-        clear_inode(inode);
+    if (S_ISREG(inode->i_mode)) {
+            struct rbuf *rb = inode->i_private;
+            kfree(rb->data);
+            kfree(rb);
+    }
+    truncate_inode_pages_final(&inode->i_data);
+    clear_inode(inode);
 }
 
 static const struct super_operations rf_sops = {
-        .statfs      = simple_statfs,
-        .drop_inode  = generic_delete_inode,
-        .evict_inode = rf_evict
+    .statfs      = simple_statfs,
+    .drop_inode  = generic_delete_inode,
+    .evict_inode = rf_evict
 };
 
 
 
 static int rf_fill_super(struct super_block *sb, void *data, int silent)
 {
-	struct inode *root, *hello;
-	struct dentry *hello_d;
-	char *page;
-
 	sb->s_op = &rf_sops;
 	sb->s_magic = RAMFSC_MAGIC;
 	sb->s_time_gran = 1;
@@ -245,7 +241,7 @@ static struct dentry *rf_mount(struct file_system_type *t,
 
 static struct file_system_type rf_fs_type = {
 	.owner   = THIS_MODULE,
-	.name    = "cramfs",
+	.name    = "myramfs",
 	.mount   = rf_mount,
 	.kill_sb = kill_litter_super,
 };
